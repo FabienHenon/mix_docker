@@ -48,13 +48,37 @@ defmodule MixDocker do
     docker :tag, image(:release), name
     docker :push, name
 
-    Mix.shell.info "Docker image #{name} has been successfully created"
+    name = image(:latest)
+
+    docker :tag, image(:release), name
+    docker :push, name
+
+    Mix.shell.info "Docker images #{image(:version)} and #{image(:latest)} have been successfully created and pushed"
   end
 
   def shipit(args) do
     build(args)
     release(args)
     publish(args)
+  end
+
+  def bump(args) do
+    suffix =
+      if length(args) > 0 do
+        [s | _] = args
+        s
+      else
+        ""
+      end
+
+      version = bump_version()
+
+      git :add, "mix.exs"
+      git :commit, "Version #{version} #{suffix}"
+      git :push
+
+      git :tag, version
+      git :push, ["--tags"]
   end
 
   def customize([]) do
@@ -114,6 +138,26 @@ defmodule MixDocker do
     system! "docker", ["push", image]
   end
 
+  defp git(:add, file) do
+    system! "git", ["add", file]
+  end
+
+  defp git(:commit, message) do
+    system! "git", ["commit", "-m", message]
+  end
+
+  defp git(:push) do
+    git :push, []
+  end
+
+  defp git(:push, opts) do
+    system! "git", ["push" | opts]
+  end
+
+  defp git(:tag, tag) do
+    system! "git", ["tag", tag]
+  end
+
   defp with_dockerfile(name, fun) do
     if File.exists?(name) do
       fun.()
@@ -151,5 +195,40 @@ defmodule MixDocker do
 
   defp system!(cmd, args) do
     {_, 0} = system(cmd, args)
+  end
+
+  defp bump_version() do
+    mix_exs_path = "mix.exs"
+
+    unless File.exists?(mix_exs_path), do: raise "Impossible to open file #{mix_exs_path}!"
+
+    Logger.debug "Bumping #{mix_exs_path}..."
+
+    File.write mix_exs_path, (
+      File.read!(mix_exs_path)
+      |> String.split("\n")
+      |> (Enum.map fn(line) ->
+        Regex.replace(~r/version:\s*"(\d+)\.(\d+)\.(\d+)"/, line, fn(_, major, minor, sub) ->
+          {sub, _} = Integer.parse(sub)
+          old_version = "#{major}.#{minor}.#{sub}"
+          new_version = "#{major}.#{minor}.#{sub + 1}"
+          Logger.debug "Bumping from #{old_version} to #{new_version}"
+          "version: \"#{major}.#{minor}.#{sub + 1}\""
+        end)
+      end)
+      |> Enum.join("\n")
+    )
+
+    # Getting new version
+    File.read!(mix_exs_path)
+    |> String.split("\n")
+    |> (Enum.reduce "", fn(line, version) ->
+      case Regex.run(~r/version:\s*"(\d+)\.(\d+)\.(\d+)"/, line) do
+        [_, major, minor, sub] ->
+          "#{major}.#{minor}.#{sub}"
+        nil ->
+          version
+      end
+    end)
   end
 end
