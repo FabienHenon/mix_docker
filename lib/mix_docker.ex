@@ -81,6 +81,42 @@ defmodule MixDocker do
       git :push, ["--tags"]
   end
 
+  def deploy(args) do
+    default_args =
+      %{service_id: System.get_env("RANCHER_SERVICE_ID"),
+      image_name: image(:version),
+      rancher_url: System.get_env("RANCHER_URL"),
+      rancher_access_key: System.get_env("RANCHER_ACCESS_KEY"),
+      rancher_secret_key: System.get_env("RANCHER_SECRET_KEY")}
+
+    args = Enum.reduce(args, default_args, fn(arg, args) ->
+      case arg do
+        "--url=" <> url ->
+          %{args | rancher_url: url}
+        "--access-key=" <> access_key ->
+          %{args | rancher_access_key: access_key}
+        "--secret-key=" <> secret_key ->
+          %{args | rancher_secret_key: secret_key}
+        "--service=" <> service ->
+          %{args | service_id: service}
+        image_tag ->
+          %{args | image_name: image(image_tag)}
+      end
+    end)
+
+    if args |> Map.values |> Enum.any?(&is_nil/1), do: raise "Missing parameters. We need: --url, --access-key, --secret-key, --service. Or env variables: RANCHER_SERVICE_ID, RANCHER_URL, RANCHER_ACCESS_KEY, RANCHER_SECRET_KEY"
+
+    docker :run, [
+      "-e", "RANCHER_URL=#{args.rancher_url}",
+      "-e", "RANCHER_ACCESS_KEY=#{args.rancher_access_key}",
+      "-e", "RANCHER_SECRET_KEY=#{args.rancher_secret_key}",
+      "etlweather/gaucho",
+      "upgrade", "#{args.service_id}",
+      "--complete_previous=True",
+      "--imageUuid=docker:#{args.image_name}",
+      "--auto_complete=True"]
+  end
+
   def customize([]) do
     try_copy_dockerfile @dockerfile_build
     try_copy_dockerfile @dockerfile_release
@@ -136,6 +172,10 @@ defmodule MixDocker do
 
   defp docker(:push, image) do
     system! "docker", ["push", image]
+  end
+
+  defp docker(:run, args) do
+    system! "docker", ["run" | ["--rm" | ["-t" | args]]]
   end
 
   defp git(:add, file) do

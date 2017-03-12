@@ -51,14 +51,14 @@ defmodule Mix.Tasks.Docker.Customize do
   defdelegate run(args), to: MixDocker, as: :customize
 end
 
-# defmodule Mix.Tasks.Docker.Deploy do
-#   use Mix.Task
-#
-#   @shortdoc "Deploy the docker image in Rancher"
-#   @preferred_cli_env :prod
-#
-#   defdelegate run(args), to: MixDocker, as: :deploy
-# end
+defmodule Mix.Tasks.Docker.Deploy do
+  use Mix.Task
+
+  @shortdoc "Deploy the docker image in Rancher"
+  @preferred_cli_env :prod
+
+  defdelegate run(args), to: MixDocker, as: :deploy
+end
 
 defmodule Mix.Tasks.Docker.Bump do
   use Mix.Task
@@ -68,6 +68,3 @@ defmodule Mix.Tasks.Docker.Bump do
 
   defdelegate run(args), to: MixDocker, as: :bump
 end
-
-# Deploy cmd: release image in Rancher using docker image (access env given in parameters, as well as service id)
-# Prod cmd: should upgrade given service with latest image (is image nma enot given in parameter to deploy)
