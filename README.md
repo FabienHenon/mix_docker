@@ -10,22 +10,281 @@ and [distillery](https://github.com/bitwalker/distillery) releases.
 
   1. Add `mix_docker` to your list of dependencies in `mix.exs`:
 
-    ```elixir
-    def deps do
-      [{:mix_docker, "~> 0.3.0"}]
-    end
-    ```
+```elixir
+def deps do
+  [{:mix_docker, "~> 0.3.0"}]
+end
+```
 
   2. Configure Docker image name
 
-    ```elixir
-    # config/config.exs
-    config :mix_docker, image: "recruitee/hello"
-    ```
+```elixir
+# config/config.exs
+config :myapp, :env, Mix.env
+config :mix_docker, image: "recruitee/hello"
+```
 
   3. Run `mix docker.init` to init distillery release configuration
 
   4. Run `mix docker.build` & `mix docker.release` to build the image. See [Usage](#Usage) for more.
+
+  5. Configure prod correctly for release
+
+```elixir
+# config/prod.exs
+config :myapp, :rancher_service_name, "${RANCHER_SERVICE_NAME}"
+
+config :myapp, MyApp.Endpoint,
+  http: [port: "${PORT}"],
+  url: [host: "${HOST}", port: "${PORT}"],
+  # cache_static_manifest: "priv/static/manifest.json", # If not needed
+  secret_key_base: "${SECRET_KEY_BASE}",
+  server: true,
+  root: ".",
+  version: Mix.Project.config[:version]
+
+config :myapp, :env, :prod
+```
+
+**Be carefull of configuration variables that are used in macros (during compilation) because they won't be replaced by their environment variable value at this moment. Thus at runtime the configuration won't be correct**
+
+  6. Add path to custom `vm.args` file in distillery config
+
+```elixir
+# rel/config.exs
+environment :prod do
+  set vm_args: "rel/vm.args"
+end
+```
+
+  7. Create `rel/vm.args`
+
+```
+# rel/vm.args
+## Name of the node - this is the only change
+-name myapp@${RANCHER_IP}
+
+## Cookie for distributed erlang
+-setcookie something_to_change
+
+## Heartbeat management; auto-restarts VM if it dies or becomes unresponsive
+## (Disabled by default..use with caution!)
+##-heart
+
+## Enable kernel poll and a few async threads
+##+K true
+##+A 5
+
+## Increase number of concurrent ports/sockets
+##-env ERL_MAX_PORTS 4096
+
+## Tweak GC to run more often
+##-env ERL_FULLSWEEP_AFTER 10
+
+# Enable SMP automatically based on availability
+-smp auto
+
+```
+
+  8. Create `rel/rancher_boot.sh` with execution rights
+
+```sh
+#!/bin/sh
+set -e
+
+export RANCHER_IP=$(wget -qO- http://rancher-metadata.rancher.internal/latest/self/container/primary_ip)
+export RANCHER_SERVICE_NAME=$(wget -qO- http://rancher-metadata.rancher.internal/latest/self/service/name)
+
+/opt/app/bin/myapp $@
+```
+
+  9. Add deployment script for CI/CD tool:
+
+```sh
+#!/bin/bash
+
+export PATH="$HOME/dependencies/erlang/bin:$HOME/dependencies/elixir/bin:$PATH"
+
+mix docker.bump "[ci skip]"
+mix docker.build
+mix docker.release
+mix docker.publish
+mix docker.deploy
+```
+
+**Don't forget to update your `circle.yml` or travis equivalent to use this script for deployment and to configure docker and git:**
+
+```
+# Example for CircleCI
+deployment:
+  registry:
+    branch: master
+    commands:
+      - git config user.name "circleci"
+      - git config user.email "email@company.com"
+      - docker login -e $DOCKER_EMAIL -u $DOCKER_USER -p $DOCKER_PASS registry_url
+      - scripts/ci/deploy.sh
+
+```
+
+You must set the following environment variables and a [read/write SSH key for github](https://circleci.com/docs/1.0/adding-read-write-deployment-key/)
+
+* `DOCKER_EMAIL`: Email used in the docker registry
+* `DOCKER_USER`: User name used to authenticate in the registry
+* `DOCKER_PASS`: Password used to authenticate in the registry
+* `RANCHER_SERVICE_ID`: ID of the Rancher service to upgrade for deployment
+* `RANCHER_ACCESS_KEY`: Access key for Rancher API
+* `RANCHER_SECRET_KEY`: Secret key for Rancher API
+* `RANCHER_URL`: Rancher API Url
+
+You must also add support for docker in your CI/CD tool. For example with CircleCI:
+
+```
+machine:
+  pre:
+    - curl -sSL https://s3.amazonaws.com/circle-downloads/install-circleci-docker.sh | bash -s -- 1.10.0
+
+  services:
+    - docker
+```
+
+  10. Add `Dockerfile.build`
+
+```
+FROM bitwalker/alpine-erlang:19.2.1b
+
+ENV HOME=/opt/app/ TERM=xterm
+
+# Install Elixir and basic build dependencies
+RUN \
+    echo "@edge http://nl.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
+    apk update && \
+    apk --no-cache --update add \
+      git make g++ \
+      elixir@edge && \
+    rm -rf /var/cache/apk/*
+
+# Install Hex+Rebar
+RUN mix local.hex --force && \
+    mix local.rebar --force
+
+RUN elixir --version
+
+WORKDIR /opt/app
+
+ENV MIX_ENV=prod
+
+# Cache elixir deps
+COPY mix.exs mix.lock ./
+RUN mix do deps.get, deps.compile
+
+COPY . .
+
+RUN mix release --env=prod --verbose
+```
+
+  11. Add `Dockerfile.release`
+
+```
+FROM bitwalker/alpine-erlang:19.2.1b
+
+RUN apk update && \
+    apk --no-cache --update add libgcc libstdc++ && \
+    rm -rf /var/cache/apk/*
+
+EXPOSE 4000
+ENV PORT=4000 MIX_ENV=prod REPLACE_OS_VARS=true SHELL=/bin/sh
+
+ADD myapp.tar.gz ./
+RUN chown -R default ./releases
+
+USER default
+
+# the only change are these two lines
+COPY rel/rancher_boot.sh /opt/app/bin/rancher_boot.sh
+ENTRYPOINT ["/opt/app/bin/rancher_boot.sh"]
+```
+
+**Replace `myapp.tar.gz` by your app name**
+
+  12. Add `rancher.ex` file in the `lib/` directory to add auto discovery with rancher
+
+```elixir
+defmodule MyApp.Rancher do
+  use GenServer
+
+  require Logger
+
+  @connect_interval 5000 # try to connect every 5 seconds
+
+  def start_link do
+    GenServer.start_link __MODULE__, [], name: __MODULE__
+  end
+
+  def init([]) do
+    name = Application.fetch_env!(:myapp, :rancher_service_name)
+    send self(), :connect
+
+    {:ok, to_char_list(name)}
+  end
+
+  def handle_info(:connect, name) do
+    case :inet_tcp.getaddrs(name) do
+      {:ok, ips} ->
+        Logger.debug "Connecting to #{name}: #{inspect ips}"
+        for {a,b,c,d} <- ips do
+          Node.connect :"myapp@#{a}.#{b}.#{c}.#{d}"
+        end
+
+      {:error, reason} ->
+        Logger.debug "Error resolving #{inspect name}: #{inspect reason}"
+    end
+
+    Logger.info "Nodes: #{inspect Node.list}"
+    Process.send_after(self(), :connect, @connect_interval)
+
+    {:noreply, name}
+  end
+end
+```
+
+  13. Add this code to your supervision tree
+
+```elixir
+# myapp.ex
+
+# ...
+
+children =
+  if Application.get_env(:myapp, :env) == :prod do
+    [worker(MyApp.Rancher, []) | children]
+  else
+    children
+  end
+
+# ...
+```
+
+  14. Eventually [create erlang commands to run migrations](https://github.com/bitwalker/distillery/blob/256f002c75b79d5b22b857a0e24d4b5d29a4215a/docs/Running%20Migrations.md) and what you may also need.
+
+  15. Add these lines in the specified files if using `tzdata` lib (with `timex` or `calendar`)
+
+```elixir
+# config/prod.exs
+config :tzdata, :data_dir, "/opt/app/elixir_tzdata_data"
+```
+
+```
+# Dockerfile.release
+
+#...
+USER default
+
+# Only this line is new
+RUN mkdir /opt/app/elixir_tzdata_data
+
+#...
+```
 
 
 ## Guides
@@ -50,6 +309,9 @@ Run `mix docker.shipit`
 
 ### Customize default Dockerfiles
 Run `mix docker.customize`
+
+### Deploy to Rancher
+Run `mix docker.deploy`
 
 
 ## FAQ
