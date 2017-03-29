@@ -71,9 +71,13 @@ defmodule MixDocker do
         ""
       end
 
+      rel_config_path = "rel/config.exs"
+
       version = bump_version()
 
       git :add, "mix.exs"
+      if File.exists?(rel_config_path), do: git :add, rel_config_path
+
       git :commit, "Version #{version} #{suffix}"
       git :push
 
