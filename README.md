@@ -286,6 +286,20 @@ RUN mkdir /opt/app/elixir_tzdata_data
 #...
 ```
 
+  16. For umbrella apps you will need to copy mix.exs files from each app in `Dockerfile.build`:
+
+```
+# Dockerfile.build
+
+# Cache elixir deps
+COPY mix.exs mix.lock ./
+
+# Add this line for each project
+RUN mkdir -p apps/my_app/config
+COPY apps/my_app/mix.exs apps/my_app/
+```
+
+You will also need to add an `app` name and a `version` to your root `mix.exs` file.
 
 ## Guides
 
