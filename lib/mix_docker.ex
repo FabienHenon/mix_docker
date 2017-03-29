@@ -239,6 +239,7 @@ defmodule MixDocker do
 
   defp bump_version() do
     mix_exs_path = "mix.exs"
+    rel_config_path = "rel/config.exs"
 
     unless File.exists?(mix_exs_path), do: raise "Impossible to open file #{mix_exs_path}!"
 
@@ -260,15 +261,33 @@ defmodule MixDocker do
     )
 
     # Getting new version
-    File.read!(mix_exs_path)
-    |> String.split("\n")
-    |> (Enum.reduce "", fn(line, version) ->
-      case Regex.run(~r/version:\s*"(\d+)\.(\d+)\.(\d+)"/, line) do
-        [_, major, minor, sub] ->
-          "#{major}.#{minor}.#{sub}"
-        nil ->
-          version
-      end
-    end)
+    current_version =
+      File.read!(mix_exs_path)
+      |> String.split("\n")
+      |> (Enum.reduce "", fn(line, version) ->
+        case Regex.run(~r/version:\s*"(\d+)\.(\d+)\.(\d+)"/, line) do
+          [_, major, minor, sub] ->
+            "#{major}.#{minor}.#{sub}"
+          nil ->
+            version
+        end
+      end)
+
+    # We try to bump rel/config.exs version if needed
+    if File.exists?(rel_config_path) do
+      File.write rel_config_path, (
+        File.read!(rel_config_path)
+        |> String.split("\n")
+        |> (Enum.map fn(line) ->
+          Regex.replace(~r/set\s*version:\s*"(\d+)\.(\d+)\.(\d+)"/, line, fn(_, _, _, _) ->
+            Logger.debug "Also setting rel/config.exs release version to #{current_version}"
+            "set version: \"#{current_version}\""
+          end)
+        end)
+        |> Enum.join("\n")
+      )
+    end
+
+    current_version
   end
 end
